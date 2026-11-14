@@ -41,13 +41,13 @@ Configured seeds
 | `Services/PrefetchDedupService.cs` | Canonicalizes URLs by removing fragments and explicit ports, lowercasing, and trimming trailing slashes. Combines a Bloom filter with a `ConcurrentDictionary` of seen URLs to reject repeat URLs. |
 | `Services/FrontierService.cs` | Adds fresh URLs to a priority queue ordered by `-Score + Depth` (lower priority number dequeues first). Retries go to a separate queue with roughly `2^Retry` seconds of backoff plus jitter. Both queues feed the fetcher. |
 | `Services/FetcherService.cs` | Checks the service's `robots.txt` rules (when enabled), applies a host delay, requests pages via `HttpClient`, and sends successful `text/html` responses to extraction. Handles selected HTTP redirect and 5xx response codes in its own branch logic. |
-| `Services/ExtractorService.cs` | Parses HTML with HtmlAgilityPack and AngleSharp; extracts metadata, title, visible `body` text nodes and HTTP(S) outbound links; measures HTML size and computes the optional contextual page score. |
+| `Services/ExtractorService.cs` | Parses HTML with HtmlAgilityPack and AngleSharp; extracts metadata, title, `body` text nodes (including any script/style content inside `<body>`) and HTTP(S) outbound links; measures HTML size and computes the optional contextual page score. |
 | `Services/PostfetchDedupService.cs` | Hashes the extracted **body** with SHA-256 to detect exact duplicates, then uses Simhash and Hamming distance for near-duplicates. For unique pages, it emits an `EncryptedPage` and sends discovered links back to the scope filter at `Depth + 1`. |
 | `Services/OutputService.cs` | JSON-serializes the `EncryptedPage` and sends the resulting **string** with `PostAsJsonAsync` to the queue's `/api/v1/push`; records successful outbound messages. |
 
 ### Politeness and retries
 
-`Politeness/Robot.cs` and `RobotRule.cs` parse the `User-agent: *` section of `robots.txt`, support `Allow` and `Disallow` paths (including `*` and `$` patterns), and choose the longest matching rule. `FetcherService` caches the parsed rules by host and uses the configured delay floor/ceiling. It also maintains last-request timestamps per host.
+`Politeness/Robot.cs` and `RobotRule.cs` parse the `User-agent: *` section of `robots.txt`, support `Allow` and `Disallow` paths (including `*` and `$` patterns), and choose the longest matching rule. `FetcherService` caches the parsed rules by host and maintains last-request timestamps per host. The `robots.txt` `Crawl-delay` directive is not read, so in practice every host gets a fixed delay of `Crawl_Delay_Floor_Seconds` between requests; the ceiling only clamps that value.
 
 The fetcher schedules retries for **HTTP 500, 502, 503 and 504** results by returning a higher-`Retry` link to the frontier. Because its `HttpClient` uses default redirect handling, HTTP redirects may be automatically followed before the explicit redirect-handling code sees them. There is no configured maximum retry count.
 
@@ -115,7 +115,7 @@ Edit `Configurations` in `crawl/appsettings.json` (or override with ASP.NET Core
 | `Context_Aware_Body_Reward` / `Context_Aware_Host_Reward` | `5.0` / `10.0` | One-time rewards per matching configured keyword. |
 | `Near_Duplicate_Threshold` | `2` | Maximum Simhash Hamming distance treated as near-duplicate. |
 | `Politeness_Enabled` | `true` | Enable robots rules and host-based delays. |
-| `Crawl_Delay_Floor_Seconds` / `Crawl_Delay_Ceiling_Seconds` | `1` / `2` | Configured delay bounds. |
+| `Crawl_Delay_Floor_Seconds` / `Crawl_Delay_Ceiling_Seconds` | `1` / `2` | Per-host delay; the floor is the delay actually applied (see Politeness and retries). |
 | `Quiescence_Monitor_Enabled` | `true` | Enable automatic stop monitor. |
 | `Quiescence_Monitor_Shutdown_Seconds` | `15` | Consecutive seconds of empty frontier before stop. |
 | `Refinements_Enabled` | `true` | Enable crawler context scoring. |
@@ -124,6 +124,7 @@ See `Context_Aware_Body_Keywords` and `Context_Aware_Host_Keywords` in the same 
 
 ## Implementation notes and limitations
 
+- `FrontierService` enqueues into its two `PriorityQueue` instances from concurrent workers without a lock, while dequeuing under a lock. `PriorityQueue` is not thread-safe, so concurrent enqueues can corrupt queue state.
 - `QuiescenceMonitor` checks only `FrontierService.Count` once per second. In-flight fetches, other channels, or pending outputs do not count toward the condition, so an automatic stop can be premature.
 - The host restriction is `Host.EndsWith(scope)` without a dot boundary, and does not independently restrict URI scheme. Choose safe, intended seeds and scope values.
 - The `robots.txt` parser implements a limited subset of the standard (primarily wildcard user-agent rules); do not assume complete robots.txt support.
