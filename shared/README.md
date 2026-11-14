@@ -16,7 +16,7 @@ See the [root README](../README.md) for how the projects fit together.
 | `QueryDocument` | `Terms`, Lucene `Query`, `PhraseQueries`, `BooleanQuery` | Query parsing to evaluation. |
 | `CandidateDocument` | `QueryDocument`, `IndexSearcher`, `TopDocs` | Search evaluation to ranker. |
 | `RankedDocument` | `Url`, `Title`, `Score` | Search results returned by the indexer HTTP API. |
-| `CrawlData` | Mode, state, elapsed time, fetch latency, page size, duplicate and output counts | Crawler `GET /api/v1/status`. |
+| `CrawlData` | Mode, state, elapsed time, fetch latency, page size, duplicate and output counts (duplicate counts are hidden from the status response by `JsonIgnore`) | Crawler `GET /api/v1/status`. |
 | `IndexRetrieveData` | Mode, state, indexing throughput, network latency and P95 latency | Indexer `GET /api/v1/status`. |
 
 The data flow is:
@@ -48,11 +48,11 @@ BlockingCollection<T>(ConcurrentQueue<T>, capacity)
 ```
 
 - `Initialize(capacity, timeoutMilliseconds)` sets the queue's parameters once for each closed generic type `T`.
-- `Push(item)` lazily initializes a queue using defaults if necessary, then calls `BlockingCollection<T>.Add`.
+- `Push(item)` creates a queue using defaults when `_isInitialized` is `false`, then calls `BlockingCollection<T>.Add`. The lazy path does not set `_isInitialized`, so for a type that was never initialized through `Initialize(...)`, **every** push creates a new queue and discards unpulled items.
 - `Pull(cancellationToken)` calls `TryTake` with the per-type timeout; if no item is available it returns `default(T)`.
 - Default settings (when not initialized explicitly): capacity `100`, poll timeout `200 ms`.
 
-**Each closed generic type has independent static state.** In the queue web project, initialization currently happens for `MessageQueue<EncryptedPage>` but controller push/pull use `MessageQueue<string>`; this causes the actual HTTP queue to use defaults on first push and can cause a pull-before-push failure. See the [queue README](../inter-services-pub-sub/README.md) for details.
+**Each closed generic type has independent static state.** In the queue web project, initialization currently happens for `MessageQueue<EncryptedPage>` but controller push/pull use `MessageQueue<string>`; this means the actual HTTP queue is recreated with defaults on every push (dropping unpulled messages) and can cause a pull-before-push failure. See the [queue README](../inter-services-pub-sub/README.md) for details.
 
 This queue is process-local and one-consumer-per-item, rather than a cross-process broker. Communication across services is achieved by the queue web project's HTTP endpoints.
 
