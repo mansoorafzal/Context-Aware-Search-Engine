@@ -1,6 +1,6 @@
 # Context Aware Search Engine (CASE)
 
-CASE is a .NET 8 prototype that crawls websites, extracts and deduplicates HTML pages, passes them through an HTTP-backed queue, and indexes them in Lucene.NET for keyword search. Its two main processing services use asynchronous `System.Threading.Channels` pipelines, while configuration controls crawl scope and optional context-oriented scoring and query boosts.
+CASE is a .NET 8 prototype that crawls websites, extracts and deduplicates HTML pages, passes them through an HTTP-backed queue, and indexes them in Lucene.NET for keyword search. It was built as the final project for *Advanced Internet Systems and Applications* in the MS in Computer Science at Georgia Tech, which is why the default crawl targets `gatech.edu`. Its two main processing services use asynchronous `System.Threading.Channels` pipelines, while configuration controls crawl scope and optional context-oriented scoring and query boosts.
 
 > **Implementation note:** This repository is a prototype, not a durable distributed search platform. The Lucene index and inter-service queue are in memory, and the current queue initialization and search concurrency behavior have important limitations described below.
 
@@ -139,11 +139,12 @@ The crawler and indexer point to the queue using `Inter_Services_Pub_Sub_Url` (d
 ## Current implementation limitations
 
 - **Volatile storage:** `IndexWriterFactory` uses `RAMDirectory`; the index disappears when `index-retrieve` exits. The queue is also in process memory.
-- **Queue initialization mismatch:** Startup initializes `MessageQueue<EncryptedPage>`, while HTTP `push` and `pull` use `MessageQueue<string>`. These are separate generic static instances. As written, the HTTP queue gets lazily initialized with the class defaults (capacity `100`, pull timeout `200 ms`) on first push; a pull before that can fail. The queue appsettings capacity of `10000` is therefore not applied to the HTTP string queue.
+- **Queue initialization mismatch:** Startup initializes `MessageQueue<EncryptedPage>`, while HTTP `push` and `pull` use `MessageQueue<string>`. These are separate generic static instances, so the HTTP string queue is never explicitly initialized. `Push` then sees `_isInitialized == false` on **every** call and creates a new `BlockingCollection` with the class defaults (capacity `100`, pull timeout `200 ms`), discarding any messages not yet pulled. Under load, pages can therefore be lost between the crawler and the indexer, and the queue never reaches its capacity. A pull before the first push can fail, and the appsettings capacity of `10000` is not applied to the HTTP string queue.
 - **Single in-flight response slot:** `index-retrieve/Services/OutputService.cs` has one `TaskCompletionSource` field rather than per-request correlation. Overlapping search requests can replace each other's completion slot and may hang or receive mismatched results; use one request at a time for manual testing.
 - **Scoring separation:** Crawl-time page scores are computed/stored but not used to reprioritize discovered URLs or directly added to retrieval scores. Search results are sorted by Lucene scores.
+- **Frontier thread safety:** `FrontierService` enqueues into its two `PriorityQueue` instances from concurrent workers without a lock, while dequeuing under a lock. `PriorityQueue` is not thread-safe, so concurrent enqueues can corrupt queue state.
 - **Quiescence heuristic:** The crawler's automatic-stop monitor checks only the frontier heap count, not every pipeline channel or in-flight request. It can stop while work remains elsewhere.
-- **Prototype behavior:** Queue messages are consumed once, with no persistence or acknowledgment/replay mechanism. The crawler's HTTP output logs a full-queue response but does not re-enqueue that document.
+- **Prototype behavior:** Queue messages are consumed once, with no persistence or acknowledgment/replay mechanism. The crawler's HTTP output logs a full-queue response but does not re-enqueue that document (with the initialization mismatch above, the queue does not fill in practice).
 
 These are descriptions of the checked-in implementation, not guarantees of production behavior. No automated test suite is included in this repository.
 
