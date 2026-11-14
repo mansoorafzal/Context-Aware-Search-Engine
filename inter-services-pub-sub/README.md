@@ -63,7 +63,7 @@ The startup initialization uses `MessageQueue<EncryptedPage>` but the endpoints 
 
 As written:
 
-- The HTTP string queue is lazily created by its **first successful push** with `shared.MessageQueue<T>` defaults: capacity `100`, timeout `200 ms`.
+- The HTTP string queue is never explicitly initialized. `Push` checks `_isInitialized`, finds it `false` on **every** call (the lazy path never sets it), and creates a new `BlockingCollection` with the defaults (capacity `100`, timeout `200 ms`). Each push therefore replaces the queue and **discards any messages not yet pulled**. Under load, pages can be lost between the crawler and the indexer.
 - `GET /pull` before that first push can throw because the string queue has not been initialized.
 - `Message_Queue_Processing_Capacity = 10000` from appsettings is applied to the unused `EncryptedPage` queue, **not** to the HTTP string queue.
 - The configuration's default timeout is also `200 ms`; changing it in appsettings would not affect the actual string queue without fixing the type mismatch.
@@ -97,6 +97,6 @@ Run it before the crawler and indexer. Both of those services use `Inter_Service
 - **Not fan-out:** A message is consumed by a single successful pull. There are no subscriptions, consumer groups, acknowledgments, or replay APIs.
 - **No persistence or dead-letter handling:** Delivery/recovery is not guaranteed after process failures.
 - **Queue configuration bug:** The `EncryptedPage`/`string` generic type mismatch above must be resolved before relying on configured capacity or startup-time initialization.
-- **Full-queue handling:** The underlying `BlockingCollection<T>.Add` blocks when full in its standard behavior. The controller's `InvalidOperationException` catch is not a reliable nonblocking full-queue signal.
+- **Full-queue handling:** The underlying `BlockingCollection<T>.Add` blocks when full in its standard behavior. The controller's `InvalidOperationException` catch is not a reliable nonblocking full-queue signal. With the initialization mismatch above, the queue is replaced on every push and does not fill in practice.
 
 For the producer and consumer pipelines, see [crawl/README.md](../crawl/README.md) and [index-retrieve/README.md](../index-retrieve/README.md).
